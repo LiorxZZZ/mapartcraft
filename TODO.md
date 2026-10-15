@@ -1,19 +1,19 @@
-# Yes
+# 要做
 
-- Look at issues on Rebane repo
-- Review locale jsons, strings such as preprocessing, source existing locale strings for others
+- 查看 Rebane 原專案上的 issues
+- 檢查各語言的 locale json（例如「預處理」等字串），並從現有的語言字串補齊其他語言
 
-# Maybe
+# 也許
 
-- CLI
-- 'Edit' mode for colour replacements etc: issue #124
-- Compositing for mapdat images when uploaded image has transparency and preprocessing background enabled
-- Linear / none interpolation option for small uploads if easy
-- 2.5D maps (jkascpkmc's Fox for inspo)
-- Flammable parameter glass layer
-- View online on mobile (low priority)
+- 命令列版本（CLI）
+- 「編輯」模式，用來替換顏色等：issue #124
+- 上傳的圖片有透明部分、且啟用預處理背景時，map.dat 圖片的合成處理
+- 若容易實作，為小尺寸上傳加入線性 / 無內插選項
+- 2.5D 地圖畫（可參考 jkascpkmc 的 Fox）
+- 可燃參數：加上玻璃保護層
+- 手機版線上檢視（低優先）
 
-# Low priority
+# 低優先
 
-- `tools/addColoursJSONColourSet.py` use ImageMagick to update `tools/Palette*.png`
-- `tools/addColoursJSONBlock.py` update textures size in `viewOnline.js` automatically
+- `tools/addColoursJSONColourSet.py` 用 ImageMagick 更新 `tools/Palette*.png`
+- `tools/addColoursJSONBlock.py` 自動更新 `viewOnline.js` 中的材質圖尺寸

@@ -122,7 +122,7 @@
       "UNOBTAINABLE-COLOURS": "無法取得的顏色",
       "UNOBTAINABLE-COLOURS-TT": "啟用無法在 schematics 中取得的顏色",
       "TRANSPARENCY": "透明度",
-      "TRANSPARENCY-TT": "為 map.dat 啟用透明度",
+      "TRANSPARENCY-TT": "透明像素在 map.dat 中為顏色 0，在 NBT 中則完全不放方塊",
       "TRANSPARENCY-TOLERANCE": "容忍度",
       "MAPDAT-FILENAME-USE-ID": "檔名編號",
       "MAPDAT-FILENAME-USE-ID-TT": "map.dat 的檔名格式將設為 'map_#.dat'",

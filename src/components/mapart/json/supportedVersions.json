@@ -34,5 +34,29 @@
   "1_20": {
     "MCVersion": "1.20",
     "NBTVersion": 3463
+  },
+  "1_21": {
+    "MCVersion": "1.21",
+    "NBTVersion": 3953
+  },
+  "1_21_4": {
+    "MCVersion": "1.21.4",
+    "NBTVersion": 4189
+  },
+  "1_21_11": {
+    "MCVersion": "1.21.11",
+    "NBTVersion": 4671
+  },
+  "26_1": {
+    "MCVersion": "26.1",
+    "NBTVersion": 4786
+  },
+  "26_2": {
+    "MCVersion": "26.2",
+    "NBTVersion": 4903
+  },
+  "26_3": {
+    "MCVersion": "26.3",
+    "NBTVersion": 5023
   }
 }

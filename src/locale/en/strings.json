@@ -122,7 +122,7 @@
       "UNOBTAINABLE-COLOURS": "Unobtainiable colors",
       "UNOBTAINABLE-COLOURS-TT": "Enables map.dat colors unobtainiable in schematics",
       "TRANSPARENCY": "Transparency",
-      "TRANSPARENCY-TT": "Enables transparency for map.dat",
+      "TRANSPARENCY-TT": "Transparent pixels become colour id 0 in a map.dat, and no block at all in an NBT",
       "TRANSPARENCY-TOLERANCE": "Tolerance",
       "MAPDAT-FILENAME-USE-ID": "Numerical Filename",
       "MAPDAT-FILENAME-USE-ID-TT": "Save mapdats as 'map_#.dat'",

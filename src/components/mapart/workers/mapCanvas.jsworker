@@ -14,10 +14,20 @@ var optionValue_transparencyTolerance;
 var optionValue_betterColour;
 var optionValue_dithering;
 
+// a pixel below the alpha threshold: no block at all in an NBT, colour id 0 in a mapdat.
+// a tone of null never matches a "dark"/"normal"/"light" comparison, which is what we want as there is no block to shade
+const TRANSPARENT_COLOURSETIDANDTONE = { colourSetId: "-1", tone: null };
+
 var colourSetsToUse = []; // colourSetIds and shades to use in map
+var colourSetsToUse_forcedLight = []; // as colourSetsToUse but restricted to the light tone; see getMapartImageDataAndMaterials
 var exactColourCache = new Map(); // for mapping RGB that exactly matches in coloursJSON to colourSetId and tone
 var colourCache = new Map(); // cache for reusing colours in identical pixels
+var colourCache_forcedLight = new Map();
 var labCache = new Map();
+
+// the palette and cache the colour-matching functions work against; swapped per-pixel in getMapartImageDataAndMaterials
+var activeColourSetsToUse = colourSetsToUse;
+var activeColourCache = colourCache;
 
 var maps = [];
 
@@ -65,13 +75,13 @@ function squaredEuclideanMetricColours(pixel1, pixel2) {
 
 function findClosestColourSetIdAndToneAndRGBTo(pixelRGB) {
   let RGBBinary = (pixelRGB[0] << 16) + (pixelRGB[1] << 8) + pixelRGB[2]; // injective mapping RGB to concatenated binaries
-  if (colourCache.has(RGBBinary)) {
-    return colourCache.get(RGBBinary);
+  if (activeColourCache.has(RGBBinary)) {
+    return activeColourCache.get(RGBBinary);
   } else {
     let shortestDistance = 9999999;
     let closestPixel;
 
-    colourSetsToUse.forEach((colourSet) => {
+    activeColourSetsToUse.forEach((colourSet) => {
       Object.keys(colourSet.tonesRGB).forEach((toneKey) => {
         const toneRGB = colourSet.tonesRGB[toneKey];
         let squareDistance = squaredEuclideanMetricColours(toneRGB, pixelRGB);
@@ -84,22 +94,22 @@ function findClosestColourSetIdAndToneAndRGBTo(pixelRGB) {
         }
       });
     });
-    colourCache.set(RGBBinary, closestPixel);
+    activeColourCache.set(RGBBinary, closestPixel);
     return closestPixel;
   }
 }
 
 function findClosest2ColourSetIdAndToneAndRGBTo(pixelRGB) {
   let RGBBinary = (pixelRGB[0] << 16) + (pixelRGB[1] << 8) + pixelRGB[2];
-  if (colourCache.has(RGBBinary)) {
-    return colourCache.get(RGBBinary);
+  if (activeColourCache.has(RGBBinary)) {
+    return activeColourCache.get(RGBBinary);
   } else {
     let shortestDistance1 = 9999999;
     let shortestDistance2 = 9999999;
     let closestPixel1 = { colourSetId: null, tone: null }; // best colour
     let closestPixel2 = { colourSetId: null, tone: null }; // second best colour
 
-    colourSetsToUse.forEach((colourSet) => {
+    activeColourSetsToUse.forEach((colourSet) => {
       Object.keys(colourSet.tonesRGB).forEach((toneKey) => {
         const toneRGB = colourSet.tonesRGB[toneKey];
         let squareDistance = squaredEuclideanMetricColours(toneRGB, pixelRGB);
@@ -129,7 +139,7 @@ function findClosest2ColourSetIdAndToneAndRGBTo(pixelRGB) {
       closestPixel2 = closestPixel1; // if closestPixel1 is a better fit to closestPixel2 than closestPixel2 is to the actual pixel
     }
     let newPixels = [shortestDistance1, shortestDistance2, closestPixel1, closestPixel2];
-    colourCache.set(RGBBinary, newPixels);
+    activeColourCache.set(RGBBinary, newPixels);
     return newPixels;
   }
 }
@@ -156,6 +166,10 @@ function setupColourSetsToUse() {
       colourSetId: colourSetId,
       tonesRGB: tonesRGB,
     });
+    colourSetsToUse_forcedLight.push({
+      colourSetId: colourSetId,
+      tonesRGB: { light: coloursJSON[colourSetId].tonesRGB.light },
+    });
   }
 }
 
@@ -171,6 +185,7 @@ function setupExactColourCache() {
       });
     }
   }
+  exactColourCache.set(0, TRANSPARENT_COLOURSETIDANDTONE); // kept in step with the one in nbt.jsworker
 }
 
 function exactRGBToColourSetIdAndTone(pixelRGB) {
@@ -179,6 +194,9 @@ function exactRGBToColourSetIdAndTone(pixelRGB) {
 }
 
 function isSupportBlockMandatoryForColourSetIdAndTone(colourSetIdAndTone) {
+  if (colourSetIdAndTone.colourSetId === "-1") {
+    return false; // transparent: there is no block here, so nothing can mandate support underneath
+  }
   return coloursJSON[colourSetIdAndTone.colourSetId].blocks[selectedBlocks[colourSetIdAndTone.colourSetId]].supportBlockMandatory;
 }
 
@@ -203,13 +221,8 @@ function getMapartImageDataAndMaterials() {
     return;
   }
 
-  if (optionValue_modeNBTOrMapdat === MapModes.SCHEMATIC_NBT.uniqueId) {
-    maps.forEach((row) =>
-      row.forEach((map) => {
-        map.supportBlockCount = 128; // initialise with noobline count
-      })
-    );
-  }
+  // noobline blocks are counted per-column further down instead of being initialised to 128 here, since a column whose
+  // first pixel is transparent gets no noobline (see getPhysicalLayout_individualColumn in nbt.jsworker)
 
   let ditherMatrix;
   let divisor;
@@ -250,18 +263,30 @@ function getMapartImageDataAndMaterials() {
     }
 
     let closestColourSetIdAndTone;
-    if (
-      optionValue_modeNBTOrMapdat === MapModes.MAPDAT.uniqueId &&
-      optionValue_transparency &&
-      canvasImageData.data[indexA] < optionValue_transparencyTolerance
-    ) {
-      // we specially reserve 0,0,0,0 for transparent in mapdats
+    if (optionValue_transparency && canvasImageData.data[indexA] < optionValue_transparencyTolerance) {
+      // we specially reserve 0,0,0,0 for transparent, which means colour id 0 in a mapdat and 'place no block' in an NBT
       canvasImageData.data[indexR] = 0;
       canvasImageData.data[indexG] = 0;
       canvasImageData.data[indexB] = 0;
       canvasImageData.data[indexA] = 0;
+      closestColourSetIdAndTone = TRANSPARENT_COLOURSETIDANDTONE;
     } else {
       canvasImageData.data[indexA] = 255; // full opacity
+
+      /*
+        Minecraft shades a map pixel by comparing the height of its column against the column immediately to the North
+        (this is what the noobline exists for). A transparent pixel has no blocks in its column at all, so that column
+        reads as being at the bottom of the world and the block South of it is always drawn with its light tone, whatever
+        height we build it at. Restrict such a pixel to light tones so that the preview, the materials list and the
+        in-game map agree; nbt.jsworker correspondingly leaves its height alone rather than staircasing up to it.
+      */
+      const northPixelIsTransparent =
+        optionValue_modeNBTOrMapdat === MapModes.SCHEMATIC_NBT.uniqueId &&
+        individualMap_y !== 0 && // first row of a map has the noobline to its North, not another pixel
+        canvasImageData.data[indexA - 4 * multimapWidth] === 0;
+      activeColourSetsToUse = northPixelIsTransparent ? colourSetsToUse_forcedLight : colourSetsToUse;
+      activeColourCache = northPixelIsTransparent ? colourCache_forcedLight : colourCache;
+
       const oldPixel = [canvasImageData.data[indexR], canvasImageData.data[indexG], canvasImageData.data[indexB]];
       switch (chosenDitherMethod.uniqueId) {
         // Switch statement that checks the dither method every pixel;
@@ -391,169 +416,203 @@ function getMapartImageDataAndMaterials() {
         default:
           break;
       }
+    }
 
-      // support-block count: mapdat can skip this
-      if (optionValue_modeNBTOrMapdat === MapModes.SCHEMATIC_NBT.uniqueId) {
-        switch (optionValue_whereSupportBlocks) {
-          case WhereSupportBlocksModes.NONE.uniqueId: {
-            break;
+    // support-block count: mapdat can skip this
+    if (optionValue_modeNBTOrMapdat === MapModes.SCHEMATIC_NBT.uniqueId) {
+      const pixelIsTransparent = closestColourSetIdAndTone.colourSetId === "-1";
+      if (individualMap_y === 0 && !pixelIsTransparent) {
+        maps[whichMap_y][whichMap_x].supportBlockCount += 1; // this column's noobline block
+      }
+      /*
+        Every support block sits directly underneath a map block, so one is only ever built where the pixel it goes
+        under is opaque; where that pixel is transparent we count nothing, matching the filter that
+        getPhysicalLayout_individualColumn in nbt.jsworker applies to the schematic itself. Note that we run one row
+        behind, so the pixel a support block goes under is usually the one to the North of the pixel in hand: this is
+        why a transparent pixel still has to be walked, as the opaque pixel North of it may need supporting.
+      */
+      switch (optionValue_whereSupportBlocks) {
+        case WhereSupportBlocksModes.NONE.uniqueId: {
+          break;
+        }
+        case WhereSupportBlocksModes.IMPORTANT.uniqueId: {
+          if (isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)) {
+            maps[whichMap_y][whichMap_x].supportBlockCount += 1;
           }
-          case WhereSupportBlocksModes.IMPORTANT.uniqueId: {
-            if (isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)) {
-              maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-            }
-            break;
-          }
-          case WhereSupportBlocksModes.ALL_OPTIMIZED.uniqueId: {
-            // for AllOptimized and AllDoubleOptimized we need to know the block south's y-position / does it need support to be able to determine
-            // whether a block needs support underneath; hence we do add support blocks '1-cycle behind' in the for-loop
-            switch (individualMap_y) {
-              case 0: {
-                // we now know about the first block in the column which allows us to determine noobline support blocks
-                if (
-                  // first under-support block
-                  closestColourSetIdAndTone.tone === "dark" ||
-                  (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone))
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                if (
-                  // second under-support block
-                  closestColourSetIdAndTone.tone === "dark" &&
-                  isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                break;
+          break;
+        }
+        case WhereSupportBlocksModes.ALL_OPTIMIZED.uniqueId: {
+          // for AllOptimized and AllDoubleOptimized we need to know the block south's y-position / does it need support to be able to determine
+          // whether a block needs support underneath; hence we do add support blocks '1-cycle behind' in the for-loop
+          switch (individualMap_y) {
+            case 0: {
+              if (pixelIsTransparent) {
+                break; // a column starting transparent has no noobline, so nothing to put support blocks under
               }
-              case 1: {
-                // first block in column; special since noobline to the North
-                const coloursBlock0_index = i - 4 * 128 * optionValue_mapSize_x; //exactRGBToColourSetIdAndTone
-                const coloursBlock0 = exactRGBToColourSetIdAndTone([
-                  canvasImageData.data[coloursBlock0_index],
-                  canvasImageData.data[coloursBlock0_index + 1],
-                  canvasImageData.data[coloursBlock0_index + 2],
-                ]);
-                if (
-                  // first under-support block
-                  coloursBlock0.tone === "light" ||
-                  closestColourSetIdAndTone.tone === "dark" ||
-                  (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)) ||
-                  isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock0)
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                if (
-                  // second under-support block
-                  closestColourSetIdAndTone.tone === "dark" &&
-                  isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                break;
-              }
-              case 127: {
-                // falls through
-                // special case 127 also accounts for final block in column since we are 1-cycle behind in out for-loop; no lookahead.
-                // falls through to default case to also account for block 126 as expected too
-                const penultimateColoursBlock_index = i - 4 * 128 * optionValue_mapSize_x;
-                const penultimateColoursBlock = exactRGBToColourSetIdAndTone([
-                  canvasImageData.data[penultimateColoursBlock_index],
-                  canvasImageData.data[penultimateColoursBlock_index + 1],
-                  canvasImageData.data[penultimateColoursBlock_index + 2],
-                ]);
-                if (
-                  // first under-support block
-                  closestColourSetIdAndTone.tone === "light" ||
-                  isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone) ||
-                  (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(penultimateColoursBlock))
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                if (
-                  // second under-support block
-                  closestColourSetIdAndTone.tone === "light" &&
-                  isSupportBlockMandatoryForColourSetIdAndTone(penultimateColoursBlock)
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-              }
-              // eslint-disable-next-line no-fallthrough
-              default: {
-                // average block in column
-                const coloursBlock_north_index = i - 4 * 128 * optionValue_mapSize_x * 2;
-                const coloursBlock_north = exactRGBToColourSetIdAndTone([
-                  canvasImageData.data[coloursBlock_north_index],
-                  canvasImageData.data[coloursBlock_north_index + 1],
-                  canvasImageData.data[coloursBlock_north_index + 2],
-                ]);
-                const coloursBlock_index = i - 4 * 128 * optionValue_mapSize_x;
-                const coloursBlock = exactRGBToColourSetIdAndTone([
-                  canvasImageData.data[coloursBlock_index],
-                  canvasImageData.data[coloursBlock_index + 1],
-                  canvasImageData.data[coloursBlock_index + 2],
-                ]);
-                const coloursBlock_south = closestColourSetIdAndTone;
-                if (
-                  // first under-support block
-                  coloursBlock.tone === "light" ||
-                  coloursBlock_south.tone === "dark" ||
-                  (coloursBlock_south.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_south)) ||
-                  isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock) ||
-                  (coloursBlock.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_north))
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                if (
-                  // second under-support block
-                  (coloursBlock_south.tone === "dark" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_south)) ||
-                  (coloursBlock.tone === "light" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_north))
-                ) {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                break;
-              }
-            }
-            break;
-          }
-          case WhereSupportBlocksModes.ALL_DOUBLE_OPTIMIZED.uniqueId: {
-            switch (individualMap_y) {
-              case 0: {
-                // noobline
+              // we now know about the first block in the column which allows us to determine noobline support blocks
+              if (
+                // first under-support block
+                closestColourSetIdAndTone.tone === "dark" ||
+                (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone))
+              ) {
                 maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                if (closestColourSetIdAndTone.tone === "dark") {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                break;
               }
-              case 127: {
-                // falls through
+              if (
+                // second under-support block
+                closestColourSetIdAndTone.tone === "dark" &&
+                isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              break;
+            }
+            case 1: {
+              // first block in column; special since noobline to the North
+              const coloursBlock0_index = i - 4 * 128 * optionValue_mapSize_x; //exactRGBToColourSetIdAndTone
+              const coloursBlock0 = exactRGBToColourSetIdAndTone([
+                canvasImageData.data[coloursBlock0_index],
+                canvasImageData.data[coloursBlock0_index + 1],
+                canvasImageData.data[coloursBlock0_index + 2],
+              ]);
+              if (coloursBlock0.colourSetId === "-1") {
+                break; // no block above row 0 to put support blocks under
+              }
+              if (
+                // first under-support block
+                coloursBlock0.tone === "light" ||
+                closestColourSetIdAndTone.tone === "dark" ||
+                (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)) ||
+                isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock0)
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              if (
+                // second under-support block
+                closestColourSetIdAndTone.tone === "dark" &&
+                isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone)
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              break;
+            }
+            case 127: {
+              // falls through
+              // special case 127 also accounts for final block in column since we are 1-cycle behind in out for-loop; no lookahead.
+              // falls through to default case to also account for block 126 as expected too
+              const penultimateColoursBlock_index = i - 4 * 128 * optionValue_mapSize_x;
+              const penultimateColoursBlock = exactRGBToColourSetIdAndTone([
+                canvasImageData.data[penultimateColoursBlock_index],
+                canvasImageData.data[penultimateColoursBlock_index + 1],
+                canvasImageData.data[penultimateColoursBlock_index + 2],
+              ]);
+              // these two sit under the final block itself, which a transparent pixel does not have
+              if (
+                // first under-support block
+                !pixelIsTransparent &&
+                (closestColourSetIdAndTone.tone === "light" ||
+                  isSupportBlockMandatoryForColourSetIdAndTone(closestColourSetIdAndTone) ||
+                  (closestColourSetIdAndTone.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(penultimateColoursBlock)))
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              if (
+                // second under-support block
+                !pixelIsTransparent &&
+                closestColourSetIdAndTone.tone === "light" &&
+                isSupportBlockMandatoryForColourSetIdAndTone(penultimateColoursBlock)
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+            }
+            // eslint-disable-next-line no-fallthrough
+            default: {
+              // average block in column
+              const coloursBlock_north_index = i - 4 * 128 * optionValue_mapSize_x * 2;
+              const coloursBlock_north = exactRGBToColourSetIdAndTone([
+                canvasImageData.data[coloursBlock_north_index],
+                canvasImageData.data[coloursBlock_north_index + 1],
+                canvasImageData.data[coloursBlock_north_index + 2],
+              ]);
+              const coloursBlock_index = i - 4 * 128 * optionValue_mapSize_x;
+              const coloursBlock = exactRGBToColourSetIdAndTone([
+                canvasImageData.data[coloursBlock_index],
+                canvasImageData.data[coloursBlock_index + 1],
+                canvasImageData.data[coloursBlock_index + 2],
+              ]);
+              if (coloursBlock.colourSetId === "-1") {
+                break; // transparent pixel to the North; no block there to put support blocks under
+              }
+              const coloursBlock_south = closestColourSetIdAndTone;
+              if (
+                // first under-support block
+                coloursBlock.tone === "light" ||
+                coloursBlock_south.tone === "dark" ||
+                (coloursBlock_south.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_south)) ||
+                isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock) ||
+                (coloursBlock.tone === "normal" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_north))
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              if (
+                // second under-support block
+                (coloursBlock_south.tone === "dark" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_south)) ||
+                (coloursBlock.tone === "light" && isSupportBlockMandatoryForColourSetIdAndTone(coloursBlock_north))
+              ) {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              break;
+            }
+          }
+          break;
+        }
+        case WhereSupportBlocksModes.ALL_DOUBLE_OPTIMIZED.uniqueId: {
+          switch (individualMap_y) {
+            case 0: {
+              // noobline
+              if (pixelIsTransparent) {
+                break; // a column starting transparent has no noobline, so nothing to put support blocks under
+              }
+              maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              if (closestColourSetIdAndTone.tone === "dark") {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              break;
+            }
+            case 127: {
+              // falls through
+              // these sit under the final block itself, which a transparent pixel does not have
+              if (!pixelIsTransparent) {
                 maps[whichMap_y][whichMap_x].supportBlockCount += 1;
                 if (closestColourSetIdAndTone.tone === "light") {
                   maps[whichMap_y][whichMap_x].supportBlockCount += 1;
                 }
               }
-              // eslint-disable-next-line no-fallthrough
-              default: {
-                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                const coloursBlock_north_index = i - 4 * 128 * optionValue_mapSize_x;
-                const coloursBlock_north = exactRGBToColourSetIdAndTone([
-                  canvasImageData.data[coloursBlock_north_index],
-                  canvasImageData.data[coloursBlock_north_index + 1],
-                  canvasImageData.data[coloursBlock_north_index + 2],
-                ]);
-                if (coloursBlock_north.tone === "light" || closestColourSetIdAndTone.tone === "dark") {
-                  maps[whichMap_y][whichMap_x].supportBlockCount += 1;
-                }
-                break;
-              }
             }
-            break;
+            // eslint-disable-next-line no-fallthrough
+            default: {
+              const coloursBlock_north_index = i - 4 * 128 * optionValue_mapSize_x;
+              const coloursBlock_north = exactRGBToColourSetIdAndTone([
+                canvasImageData.data[coloursBlock_north_index],
+                canvasImageData.data[coloursBlock_north_index + 1],
+                canvasImageData.data[coloursBlock_north_index + 2],
+              ]);
+              if (coloursBlock_north.colourSetId === "-1") {
+                break; // transparent pixel to the North; no block there to put support blocks under
+              }
+              maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              if (coloursBlock_north.tone === "light" || closestColourSetIdAndTone.tone === "dark") {
+                maps[whichMap_y][whichMap_x].supportBlockCount += 1;
+              }
+              break;
+            }
           }
-          default: {
-            break;
-          }
+          break;
         }
+        default: {
+          break;
+        }
+      }
+      if (!pixelIsTransparent) {
         maps[whichMap_y][whichMap_x].materials[closestColourSetIdAndTone.colourSetId] += 1;
       }
     }

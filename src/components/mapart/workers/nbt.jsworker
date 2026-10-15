@@ -390,6 +390,9 @@ class Map_NBT {
       }
     }
 
+    // a column starting with a transparent pixel gets no noobline: there is no block for it to be the height reference of
+    const nooblinePresent = mapColoursLayoutColumn[0].colourSetId !== "-1";
+
     // initialize noobline
     physicalColumn.push(this.returnPhysicalBlock(columnNumber, currentHeight, 0, "NOOBLINE_SCAFFOLD"));
 
@@ -397,20 +400,31 @@ class Map_NBT {
       const coloursLayoutBlock = mapColoursLayoutColumn[rowNumber];
 
       const previousHeight = currentHeight;
-      switch (coloursLayoutBlock.tone) {
-        case "dark": {
-          currentHeight -= 1;
-          break;
-        }
-        case "normal": {
-          break;
-        }
-        case "light": {
-          currentHeight += 1;
-          break;
-        }
-        default: {
-          throw new Error("Unknown tone type");
+      /*
+        Heights realise tones: a block is built one higher / lower than the block to its North to be shaded light / dark.
+        Two cases have no height to realise. A transparent pixel has no block, and must leave currentHeight untouched so
+        that the next opaque block still lands at the right height relative to the last one. A block whose North
+        neighbour is transparent is always shaded light by Minecraft whatever we do (the empty column reads as being at
+        the bottom of the world), so mapCanvas.jsworker has already given it a light tone and its own height is free;
+        we leave it level with the last opaque block, which keeps flat maps flat and the build compact.
+      */
+      const northIsTransparent = rowNumber !== 0 && mapColoursLayoutColumn[rowNumber - 1].colourSetId === "-1";
+      if (coloursLayoutBlock.colourSetId !== "-1" && !northIsTransparent) {
+        switch (coloursLayoutBlock.tone) {
+          case "dark": {
+            currentHeight -= 1;
+            break;
+          }
+          case "normal": {
+            break;
+          }
+          case "light": {
+            currentHeight += 1;
+            break;
+          }
+          default: {
+            throw new Error("Unknown tone type");
+          }
         }
       }
 
@@ -537,6 +551,23 @@ class Map_NBT {
       }
     }
 
+    /*
+      Nothing whatsoever may be built in an x-z column whose pixel is transparent, not even a support block underneath
+      where the map block would have been: it would become the highest block there and so be drawn on the map instead of
+      leaving it transparent. Dropping those blocks here rather than at each of the pushes above keeps the (already
+      involved) support-block rules in one piece; the conditions in them treat a transparent pixel as toneless and never
+      mandating support, so at worst a support block that is now redundant survives underneath a real block.
+      z 0 is the noobline row, which is North of the map and so not drawn on it; z r+1 holds map row r.
+    */
+    physicalColumn = physicalColumn.filter((physicalBlock) => {
+      const blockZ = physicalBlock.pos.value.value[2];
+      return blockZ === 0 ? nooblinePresent : mapColoursLayoutColumn[blockZ - 1].colourSetId !== "-1";
+    });
+
+    if (physicalColumn.length === 0) {
+      return; // wholly transparent column; no blocks and so no height to cache either
+    }
+
     // sort in terms of z and y, necessary for determining when a plateau has finished in valley mode, and correct noobline heights in map preview
     physicalColumn.sort((elt1, elt2) => {
       if (elt1.pos.value.value[2] < elt2.pos.value.value[2]) {
@@ -634,7 +665,8 @@ class Map_NBT {
   setNBT_json_size() {
     this.NBT_json.value.size.value.value = [
       this.mapColoursLayout.length,
-      this.columnHeightsCache.reduce((a, b) => (a > b ? a : b)) + 1,
+      // seeded, as a wholly transparent map contributes no column heights at all
+      this.columnHeightsCache.reduce((a, b) => (a > b ? a : b), 0) + 1,
       this.mapColoursLayout[0].length + 1,
     ];
   }
@@ -751,9 +783,10 @@ function setupExactColourCache() {
     }
   }
   exactColourCache.set(0, {
-    // special transparent for mapdat
+    // special transparent: colour id 0 in a mapdat, 'place no block at all' in an NBT.
+    // a tone of null never matches a "dark"/"normal"/"light" comparison, which is what we want as there is no block to shade
     colourSetId: "-1",
-    tone: "normal",
+    tone: null,
   });
 }
 
@@ -763,6 +796,9 @@ function exactRGBToColourSetIdAndTone(pixelRGB) {
 }
 
 function isSupportBlockMandatoryForColourSetIdAndTone(colourSetIdAndTone) {
+  if (colourSetIdAndTone.colourSetId === "-1") {
+    return false; // transparent: there is no block here, so nothing can mandate support underneath
+  }
   return coloursJSON[colourSetIdAndTone.colourSetId].blocks[currentSelectedBlocks[colourSetIdAndTone.colourSetId]].supportBlockMandatory;
 }
 

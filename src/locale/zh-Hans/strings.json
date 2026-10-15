@@ -122,7 +122,7 @@
       "UNOBTAINABLE-COLOURS": "无法获得的颜色",
       "UNOBTAINABLE-COLOURS-TT": "启用schematic中无法获得的 map.dat 档颜色",
       "TRANSPARENCY": "透明度",
-      "TRANSPARENCY-TT": "为 map.dat 启用透明度",
+      "TRANSPARENCY-TT": "透明像素在 map.dat 中为颜色 0，在 NBT 中则完全不放方块",
       "TRANSPARENCY-TOLERANCE": "宽容度",
       "MAPDAT-FILENAME-USE-ID": "数字文件名",
       "MAPDAT-FILENAME-USE-ID-TT": "将地图数据另存为'map_#.dat'",
